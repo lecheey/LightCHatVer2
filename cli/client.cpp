@@ -21,8 +21,6 @@
 #define QUIT "000"
 
 #define MESSAGE_LENGTH 1024
-#define PORT 7777
-#define SERVER_IP "127.0.0.1"
 
 int sockd, connection;
 struct sockaddr_in serveraddress, clientaddress;
@@ -32,9 +30,16 @@ namespace fs = std::filesystem;
 
 void Client::clientRuntime(){
 	std::cout << "Подключение к " << SERVER_IP << "...";
+	
+	fs::path dir("userlog/");
+	if(!fs::exists(dir)){
+		create_directory(dir);
+	}
+
 	clientConnect();
 	
 	while(true){
+		std::cout << getTime() << std::endl;
 		std::cout << "Главное меню\n1 - регистрация 2 - вход q - выход: ";
 		char choice;
 		std::cin >> choice;
@@ -75,7 +80,7 @@ void Client::clientConnect(){
 		exit(1);
 	}
 
-	serveraddress.sin_addr.s_addr = inet_addr(SERVER_IP);
+	serveraddress.sin_addr.s_addr = inet_addr(SERVER_IP.data());
 	serveraddress.sin_port = htons(PORT);
 	serveraddress.sin_family = AF_INET;
 	connection = connect(sockd, (struct sockaddr*)&serveraddress, sizeof(serveraddress));
@@ -89,7 +94,7 @@ void Client::clientConnect(){
 }
 
 void Client::userCreate(){
-	//systemClear();
+	systemClear();
 	std::cout << "Создание нового пользователя..." << std::endl;
 	std::cin.ignore(256, '\n');
 	
@@ -193,21 +198,33 @@ bool Client::userLogin(){
 		bzero(message, sizeof(message));
 		recv(sockd, message, MESSAGE_LENGTH, 0);
 		
-		if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
-			std::cout << ERROR_MESSAGE << "! Неверный логин или пароль" << std::endl;
-			--a;
-			continue;
-		}	
-		else if(strncmp(message, SUCCESS, CODE_LENGTH) == 0 ){
+		if(strncmp(message, SUCCESS, CODE_LENGTH) == 0 ){
 			if(findLogin(login) == -3){
 				userAdd(login);
 			}
 			_users[findLogin(login)].switchStatus();
+			send(sockd, SUCCESS, CODE_LENGTH, 0);
+		
+			bzero(message, sizeof(message));
+			recv(sockd, message, MESSAGE_LENGTH, 0);
+			
+			_users[findLogin(login)]._uid = message;
+
 			_username = login;
 			std::cout << "Успешно!\nДобро пожаловать " << login << std::endl;
 			result = true;
 			break;
 		}
+		else if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
+			std::cout << ERROR_MESSAGE << "! Неверный пароль" << std::endl;
+			--a;
+			continue;
+		}	
+		else if(strncmp(message, ERROR_NOTFOUND, CODE_LENGTH) == 0 ){
+			std::cout << ERROR_MESSAGE << "! Неверный логин" << std::endl;
+			--a;
+			continue;
+		}	
 		else{
 			std::cout << ERROR_MESSAGE << " сервера" << std::endl;
 			continue;
@@ -234,7 +251,8 @@ bool Client::userLogout(std::string &l){
 	else if(strncmp(message, SUCCESS, CODE_LENGTH) == 0 ){
 		_users[findLogin(l)].switchStatus();
 		_messages.clear();
-		//systemClear();
+		_friends.clear();
+		systemClear();
 		std::cout << "Пользователь " << l <<  " вышел из чата!" << std::endl;
 		return false; 
 	}
@@ -255,23 +273,20 @@ void Client::userAdd(std::string &l){
 
 void Client::userRuntime(std::string &_from){
 	std::string _to;
+	int _f, _t;
 	while(true){
-		//systemClear();
+		systemClear();
 		std::cout << "Друзья в чате (введите имя)\n-----" << std::endl; 
 		showUsers();
 		std::cout << "-----" << std::endl;
-		std::cout << _from << ": ";
+		std::cout << _from << ": ";	
+		std::getline(std::cin, _to, '\n');
 
-		bzero(message, sizeof(message));
-		std::cin >> message;
-
-		if((strncmp(message, "q", 1)) == 0){
+		if(_to == "q"){
 			userLogout(_from);
 			break;
 		}
 		
-		_to = message;
-
 		std::string req = makeReq("OPTUSR", _from, _to);	
 		bzero(message, sizeof(message));
 		strcpy(message, req.data());
@@ -281,55 +296,51 @@ void Client::userRuntime(std::string &_from){
 		recv(sockd, message, MESSAGE_LENGTH, 0);
 		
 		if(strncmp(message, ERROR_NOTFOUND, CODE_LENGTH) == 0){
-			std::cout << "Такого пользователя нет в системе!" << std::endl;
+			std::cout << "Такого пользователя нет в системе" << std::endl;
 			continue;
 		}
 		else if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
 			std::cout << ERROR_MESSAGE << "\nПользователь не авторизован" << std::endl;
 			break;
 		}
+		
+		_f = findLogin(_from);
+		_t = findFriend(_to);
 
-		getMsgList(_from, _to);
-		//systemClear();
+		systemClear();
 		std::cout << "---------- Собеседник  " << _to << " ----------" << std::endl; 
 				
-		showMsgs(_from, _to);
-		userTyping(_from, _to);
+		getMsgList(_f, _t);
+		//getMsgList(_from, _to);
+		//showMsgs(_from, _to);
+		userTyping(_f, _t);
 	}
 }
 
-void Client::userTyping(std::string &_from, std::string &_to){
-	std::cin.ignore(256, '\n');
-	
-	std::string msg, _time;	
-	std::string msgPkg = makeReq("HNDSHK", "empty", "empty");
-	bzero(message, sizeof(message));
-	strcpy(message, msgPkg.data());
-	send(sockd, message, sizeof(message), 0);
-	
-	_time = getTime();
-	_rcvrname = _to;
+void Client::userTyping(int &_from, int &_to){
+	//std::cin.ignore(256, '\n');
+	std::string _time, _msgbody, msgPkg;
 
 	while(true){
-		bzero(message, sizeof(message));
-		recv(sockd, message, MESSAGE_LENGTH, 0);	
-		splitReq(message, msg, _time);
-		std::cout << _to << " (" <<  _time << "): " << msg << std::endl;
-		saveMsg(_to, _from, msg, _time);
-
-		std::cout << _from << ": ";
-		std::getline(std::cin, msg, '\n');
+		std::cout << _users[_from]._login << ": ";
+		std::getline(std::cin, _msgbody, '\n');
 		_time = getTime();
 
-		if(msg == "q"){
+		if(_msgbody == "q"){
 			break;
 		}
 
-		msgPkg = makeReq("USRTYP", msg, _time);
+		msgPkg = makeMsg("USRTYP", _users[_from]._uid, _friends[_to]._uid, _time, _msgbody);
 		bzero(message, sizeof(message));
 		strcpy(message, msgPkg.data());
 		send(sockd, message, sizeof(message), 0);
-		saveMsg(_from, _to, msg, _time);
+		//saveMsg(_from, _to, msg, _time);
+
+		bzero(message, sizeof(message));
+		recv(sockd, message, MESSAGE_LENGTH, 0);	
+		//splitReq(message, msg, _time);
+		//std::cout << _to << " (" <<  _time << "): " << msg << std::endl;
+		//saveMsg(_to, _from, msg, _time);
 	}
 }
 
@@ -354,7 +365,7 @@ void Client::readUser(){
 	}
 }
 
-void Client::writeUser(std::string &l){
+void Client::writeUser(std::string l){
 	fs::path filepath{"accounts.txt"};
 	std::ofstream file(filepath, std::ios::out);
     if(file.is_open()){
@@ -365,7 +376,7 @@ void Client::writeUser(std::string &l){
 		file.close();
     }
 	
-	fs::path dir("usr/" + l);
+	fs::path dir("userlog/" + l);
 	if(!fs::exists(dir)){
 		create_directory(dir);
 	}
@@ -378,24 +389,92 @@ void Client::getUserList(std::string &l){
 	bzero(message, MESSAGE_LENGTH);
 	strcpy(message,req.data());
 	send(sockd, message, sizeof(message), 0);
-		
-	bzero(message, sizeof(message));
-	read(sockd, message, MESSAGE_LENGTH);
-
 	
-	if(strncmp(message, ERROR_NOTFOUND, CODE_LENGTH) == 0 ){
-		std::cout << ERROR_MESSAGE << "\nСписок не найден" << std::endl;
-	}
-	else if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
-		std::cout << ERROR_MESSAGE << "\nПользователь не авторизован" << std::endl;
-	}
-	else{
-		std::string m = message;
-		splitUserList(m);
-		std::cout << "успешно" << std::endl;
+	while(true){
+		bzero(message, sizeof(message));
+		read(sockd, message, MESSAGE_LENGTH);
+
+		if(strncmp(message, END, CODE_LENGTH) == 0){ break; }
+		
+		if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
+			std::cout << ERROR_MESSAGE << "\nПользователь не авторизован" << std::endl;
+			break;
+		}
+		
+		std::string m, id_temp;
+		splitReq(message, id_temp, m);
+
+		User newFriend(m, id_temp);
+		_friends.push_back(newFriend);
+		send(sockd, SUCCESS, CODE_LENGTH, 0);
 	}
 }
 
+void Client::getMsgList(int &_from, int &_to){
+	std::string req = makeReq("GETMSG", _users[_from]._uid, _friends[_to]._uid);	
+	bzero(message, MESSAGE_LENGTH);
+	strcpy(message,req.data());
+	send(sockd, message, sizeof(message), 0);
+	
+	while(true){
+		bzero(message, sizeof(message));
+		read(sockd, message, MESSAGE_LENGTH);
+
+		if(strncmp(message, END, CODE_LENGTH) == 0){ break; }
+		
+		if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
+			std::cout << ERROR_MESSAGE << "\nПользователь не авторизован" << std::endl;
+			break;
+		}
+		
+		std::string from_temp, to_temp, _time, _msgbody;
+		splitMsg(message, from_temp, to_temp, _time, _msgbody);
+		
+		if(_friends[_to]._uid == from_temp){
+			std::cout << _friends[_to]._login << " (" << _time << "): " << _msgbody << std::endl;
+		}
+		
+		if(_users[_from]._uid == from_temp){
+			std::cout << _users[_from]._login << " (" << _time << "): " << _msgbody << std::endl;
+		}	
+
+		send(sockd, SUCCESS, CODE_LENGTH, 0);
+	}
+
+}
+/*
+void Client::getMsgList(std::string &_from, std::string &_to){
+	std::string req = makeReq("GETMSG", _from, _to);	
+	bzero(message, MESSAGE_LENGTH);
+	strcpy(message,req.data());
+	send(sockd, message, sizeof(message), 0);
+	
+	while(true){
+		bzero(message, sizeof(message));
+		read(sockd, message, MESSAGE_LENGTH);
+
+		if(strncmp(message, END, CODE_LENGTH) == 0){ break; }
+		
+		if(strncmp(message, ERROR_AUTH, CODE_LENGTH) == 0 ){
+			std::cout << ERROR_MESSAGE << "\nПользователь не авторизован" << std::endl;
+			break;
+		}
+		
+		std::string from_temp, to_temp, _time, _msgbody;
+		splitMsg(message, from_temp, to_temp, _time, _msgbody);
+		
+		int i = 0;
+		for(; i < _friends.size(); i++){
+			if(_friends[i]._uid == from_temp){ break; }
+		}
+		
+		std::cout << _friends[i]._login << " (" << _time << "): " << _msgbody << std::endl;
+
+		send(sockd, SUCCESS, CODE_LENGTH, 0);
+	}
+}
+*/
+/*
 void Client::saveMsg(std::string &_from, std::string &_to, std::string &_msg, std::string &_time){
 	fs::path p = "usr/" + _username;
 	fs::path dir(p);
@@ -420,7 +499,6 @@ void Client::saveMsg(std::string &_from, std::string &_to, std::string &_msg, st
     	}
 	}
 }
-
 void Client::getMsgList(std::string &_from, std::string &_to){
 	fs::path p = "usr/" + _from;
 	fs::path dir(p);
@@ -445,7 +523,6 @@ void Client::getMsgList(std::string &_from, std::string &_to){
 		}
 	}
 }
-
 void Client::showMsgs(std::string &_from, std::string &_to){
 	for(int i = 0; i < _messages.size(); i++){
 		if(_to == "all" && _to == _messages[i]._receiver){
@@ -459,10 +536,20 @@ void Client::showMsgs(std::string &_from, std::string &_to){
 		}
 	}
 }
+*/
 
 int Client::findLogin(std::string &user){
 	for(int i = 0; i < _usercount; i++){
 		if(user == _users[i]._login){
+			return i;
+		}
+	}
+	return -3;
+}
+
+int Client::findFriend(std::string &user){
+	for(int i = 0; i < _usercount; i++){
+		if(user == _friends[i]._login){
 			return i;
 		}
 	}
@@ -482,7 +569,7 @@ int Client::loginCheck(std::string &l){
 
 void Client::showUsers(){
 	for(int i = 0; i < _friends.size(); i++){
-		std::cout << _friends[i] << std::endl;
+		std::cout << _friends[i]._uid << " " << _friends[i]._login << std::endl;
 	}
 }
 
@@ -494,7 +581,7 @@ void Client::User::switchStatus(){
 		this->_status = userstatus::offline;
 	}
 }
-
+/*
 void Client::splitUserList(std::string &m){
 	size_t pos{0};
 	int i{0};
@@ -503,7 +590,7 @@ void Client::splitUserList(std::string &m){
 		m.erase(0, pos + 1);
 	}
 }
-
+*/
 std::string Client::makeReq(std::string rtype, std::string v1, std::string v2){
 	std::string result;
 		result.append(rtype);
@@ -525,4 +612,72 @@ void Client::splitReq(std::string m, std::string &v1, std::string &v2){
 	}
 	v1 = temparr[1];
 	v2 = temparr[2];
+}
+
+std::string Client::makeMsg(std::string rtype, std::string v1, std::string v2, std::string v3, std::string v4){
+	std::string result;
+		result.append(rtype);
+		result.append(";");
+		result.append(v1); // отправитель
+		result.append(";");
+		result.append(v2); // получатель
+		result.append(";");
+		result.append(v3); // время
+		result.append(";");
+		result.append(v4); // сообщение
+		result.append(";");
+	return result;
+}
+
+void Client::splitMsg(std::string m, std::string &v1, std::string &v2, std::string &v3, std::string &v4){
+	std::string temparr[5];
+	size_t pos{0};
+	int i{0};
+	while((pos = m.find(";")) != std::string::npos){
+		temparr[i++] = m.substr(0, pos); 
+		m.erase(0, pos + 1);
+	}
+	v1 = temparr[1];
+	v2 = temparr[2];
+	v3 = temparr[3];
+	v4 = temparr[4];
+}
+
+void Client::readConfig(){
+	std::ifstream cfg(config_path, std::ios::in);
+	if(cfg.is_open()){
+		std::string x, y;
+		while(getline(cfg, x, '\t')){
+			getline(cfg, y, '\n');
+				
+			if(x == "PORT"){ PORT = stoi(y); }
+			else if(x == "SERVER_IP"){ SERVER_IP = y; }
+		}	
+		cfg.close();
+	}
+	else{
+		PORT = 7777;
+		SERVER_IP = "127.0.0.1";
+		writeConfig();
+	}
+}
+
+void Client::writeConfig(){
+	std::ofstream cfg(config_path, std::ios::out);
+    if(cfg.is_open()){
+		cfg << "PORT";
+		cfg << '\t';
+		cfg << PORT;
+		cfg << '\n';
+
+		cfg << "SERVER_IP";
+		cfg << '\t';
+		cfg << SERVER_IP;
+		cfg << '\n';
+		
+		cfg.close();
+   } 	
+   else{
+		std::cout << "Ошибка открытия файла" << std::endl;
+   }
 }

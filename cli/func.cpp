@@ -15,7 +15,7 @@ void userHelp(){
 std::string getTime(){
 	std::time_t result = std::time(nullptr);
 	char mbstr[100];
-	std::strftime(mbstr, sizeof(mbstr), "%T", std::localtime(&result));
+	std::strftime(mbstr, sizeof(mbstr), "%Y-%m-%d %T", std::localtime(&result));
 	return (std::string)mbstr;
 }
 
